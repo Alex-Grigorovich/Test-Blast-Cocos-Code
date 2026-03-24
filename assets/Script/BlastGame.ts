@@ -219,171 +219,126 @@ export default class BlastGame extends cc.Component {
         const value = this.board.getAt(row, col);
         if (value < 0) return;
 
-        if (this.boosterMode === 'bomb') {
-            this.inputBlocked = true;
-            const initial = this.board.getBombEffectCells(row, col, GameConfig.BOMB_RADIUS);
-            const cells = this.board.getCellsWithChainReaction(initial);
-            const count = this.board.burnCells(cells);
-            this.state.addScore(count * GameConfig.scorePerTile);
-            this.boosterMode = 'none';
-            if (this.gameUI) this.gameUI.updateScore(this.state.score, GameConfig.TARGET_SCORE);
-            this.playSound(this.soundExplosionClip);
-            this.boardView.playBurnAnimation(cells, () => this.applyGravityAndRefill(), true);
-            return;
-        }
+        if (this.tryHandleBombBooster(row, col)) return;
+        if (this.tryHandlePendingTeleportSwap(row, col, value)) return;
+        if (this.tryStartTeleportMode(row, col, value)) return;
+        if (this.tryHandleSpecialTile(row, col, value)) return;
+        this.handleNormalGroupClick(row, col, touchWorld);
+    }
 
-        if (this.selectedForSwap !== null) {
-            if (row === this.selectedForSwap[0] && col === this.selectedForSwap[1]) {
-                this.selectedForSwap = null;
-                this.boosterMode = 'none';
-                this.teleportSource = null;
-                this.boardView.highlightCells([], false);
-                this.boardView.refresh();
-                return;
-            }
-            const isActionTile = (value >= GameConfig.TILE_ROCKET_H && value <= GameConfig.TILE_CLEAR_ALL) ||
-                value === GameConfig.TILE_BOMB_CLEAR_FIELD ||
-                (value >= 0 && value <= 4 && this.board.getConnectedGroup(row, col).length >= GameConfig.MIN_GROUP_SIZE);
-            if (isActionTile) {
-                this.selectedForSwap = null;
-                this.boosterMode = 'none';
-                this.teleportSource = null;
-                this.boardView.highlightCells([], false);
-                this.boardView.refresh();
-            } else {
-                this.board.swap(this.selectedForSwap[0], this.selectedForSwap[1], row, col);
-                if (this.teleportSource === 'ui') this.playSound(this.soundTeleportClip);
-                if (this.teleportSource === 'tile') this.state.useMove();
-                this.selectedForSwap = null;
-                this.boosterMode = 'none';
-                this.teleportSource = null;
-                this.boardView.highlightCells([], false);
-                this.boardView.rebuildGridFromBoard();
-                this.boardView.syncSnapshotWithBoard();
-                if (this.gameUI) {
-                    this.gameUI.updateScore(this.state.score, GameConfig.TARGET_SCORE);
-                    this.gameUI.setMoves(this.state.movesLeft);
-                }
-                return;
-            }
-        }
+    private tryHandleBombBooster(row: number, col: number): boolean {
+        if (this.boosterMode !== 'bomb') return false;
+        this.resolveBurn(this.board.getBombEffectCells(row, col, GameConfig.BOMB_RADIUS), {
+            consumeMove: false,
+            useExplosionFx: true,
+            playExplosionSound: true,
+        });
+        this.boosterMode = 'none';
+        return true;
+    }
 
+    private tryHandlePendingTeleportSwap(row: number, col: number, value: number): boolean {
+        if (this.selectedForSwap === null) return false;
+        if (row === this.selectedForSwap[0] && col === this.selectedForSwap[1]) {
+            this.resetTeleportSelection();
+            return true;
+        }
+        if (this.isBlockedTeleportTarget(row, col, value)) {
+            this.resetTeleportSelection();
+            return false;
+        }
+        this.board.swap(this.selectedForSwap[0], this.selectedForSwap[1], row, col);
+        if (this.teleportSource === 'ui') this.playSound(this.soundTeleportClip);
+        if (this.teleportSource === 'tile') this.state.useMove();
+        this.selectedForSwap = null;
+        this.boosterMode = 'none';
+        this.teleportSource = null;
+        this.boardView.highlightCells([], false);
+        this.boardView.rebuildGridFromBoard();
+        this.boardView.syncSnapshotWithBoard();
+        this.syncUiCounters();
+        return true;
+    }
+
+    private tryStartTeleportMode(row: number, col: number, value: number): boolean {
         if (this.boosterMode === 'teleport' && this.teleportSource === 'ui') {
             this.selectedForSwap = [row, col];
             this.boardView.highlightCells([[row, col]], true);
-            return;
+            return true;
         }
-
         if (this.board.isTeleport(value) && this.boosterMode === 'none') {
             this.boosterMode = 'teleport';
             this.teleportSource = 'tile';
             this.selectedForSwap = [row, col];
             this.boardView.highlightCells([[row, col]], true);
-            return;
+            return true;
         }
+        return false;
+    }
 
-        if (value === GameConfig.TILE_ROCKET_H) {
-            this.inputBlocked = true;
-            const initial = this.board.getSpecialEffectCells(row, col);
-            const cells = this.board.getCellsWithChainReaction(initial);
-            const count = this.board.burnCells(cells);
-            this.state.addScore(count * GameConfig.scorePerTile);
-            this.state.useMove();
-            if (this.gameUI) {
-                this.gameUI.updateScore(this.state.score, GameConfig.TARGET_SCORE);
-                this.gameUI.setMoves(this.state.movesLeft);
-            }
-            this.playSound(this.soundExplosionClip);
-            this.boardView.playBurnAnimation(cells, () => this.applyGravityAndRefill(), true);
-            return;
+    private tryHandleSpecialTile(row: number, col: number, value: number): boolean {
+        if (value === GameConfig.TILE_ROCKET_H || value === GameConfig.TILE_ROCKET_V || value === GameConfig.TILE_BOMB_CLEAR_FIELD) {
+            this.resolveBurn(this.board.getSpecialEffectCells(row, col), {
+                consumeMove: true,
+                useExplosionFx: true,
+                playExplosionSound: true,
+            });
+            return true;
         }
-
-        if (value === GameConfig.TILE_ROCKET_V) {
-            this.inputBlocked = true;
-            const initial = this.board.getSpecialEffectCells(row, col);
-            const cells = this.board.getCellsWithChainReaction(initial);
-            const count = this.board.burnCells(cells);
-            this.state.addScore(count * GameConfig.scorePerTile);
-            this.state.useMove();
-            if (this.gameUI) {
-                this.gameUI.updateScore(this.state.score, GameConfig.TARGET_SCORE);
-                this.gameUI.setMoves(this.state.movesLeft);
-            }
-            this.playSound(this.soundExplosionClip);
-            this.boardView.playBurnAnimation(cells, () => this.applyGravityAndRefill(), true);
-            return;
-        }
-
         if (value === GameConfig.TILE_BOMB) {
-            this.inputBlocked = true;
             const bombGroup = this.board.getConnectedBombGroup(row, col);
             const initial = bombGroup.length >= 2
                 ? this.board.getUnionEffectCellsForBombGroup(bombGroup)
                 : this.board.getBombEffectCells(row, col, GameConfig.BOMB_RADIUS);
-            const cells = this.board.getCellsWithChainReaction(initial);
-            const count = this.board.burnCells(cells);
-            this.state.addScore(count * GameConfig.scorePerTile);
-            this.state.useMove();
-            if (this.gameUI) {
-                this.gameUI.updateScore(this.state.score, GameConfig.TARGET_SCORE);
-                this.gameUI.setMoves(this.state.movesLeft);
-            }
-            this.playSound(this.soundExplosionClip);
-            this.boardView.playBurnAnimation(cells, () => this.applyGravityAndRefill(), true);
-            return;
+            this.resolveBurn(initial, {
+                consumeMove: true,
+                useExplosionFx: true,
+                playExplosionSound: true,
+            });
+            return true;
         }
-
         if (value === GameConfig.TILE_BOMB_MAX) {
-            this.inputBlocked = true;
             const bombGroup = this.board.getConnectedBombGroup(row, col);
             const initial = bombGroup.length >= 2
                 ? this.board.getUnionEffectCellsForBombGroup(bombGroup)
                 : this.board.getBombEffectCells(row, col, GameConfig.BOMB_MAX_RADIUS);
-            const cells = this.board.getCellsWithChainReaction(initial);
-            const count = this.board.burnCells(cells);
-            this.state.addScore(count * GameConfig.scorePerTile);
-            this.state.useMove();
-            if (this.gameUI) {
-                this.gameUI.updateScore(this.state.score, GameConfig.TARGET_SCORE);
-                this.gameUI.setMoves(this.state.movesLeft);
-            }
-            this.playSound(this.soundExplosionClip);
-            this.boardView.playBurnAnimation(cells, () => this.applyGravityAndRefill(), true);
-            return;
+            this.resolveBurn(initial, {
+                consumeMove: true,
+                useExplosionFx: true,
+                playExplosionSound: true,
+            });
+            return true;
         }
-
-        if (value === GameConfig.TILE_BOMB_CLEAR_FIELD) {
-            this.inputBlocked = true;
-            const initial = this.board.getSpecialEffectCells(row, col);
-            const cells = this.board.getCellsWithChainReaction(initial);
-            const count = this.board.burnCells(cells);
-            this.state.addScore(count * GameConfig.scorePerTile);
-            this.state.useMove();
-            if (this.gameUI) {
-                this.gameUI.updateScore(this.state.score, GameConfig.TARGET_SCORE);
-                this.gameUI.setMoves(this.state.movesLeft);
-            }
-            this.playSound(this.soundExplosionClip);
-            this.boardView.playBurnAnimation(cells, () => this.applyGravityAndRefill(), true);
-            return;
-        }
-
-        this.inputBlocked = true;
-
         if (value === GameConfig.TILE_CLEAR_ALL) {
-            const initial = this.board.getSpecialEffectCells(row, col);
-            const cells = this.board.getCellsWithChainReaction(initial);
-            const count = this.board.burnCells(cells);
-            this.state.addScore(count * GameConfig.scorePerTile);
-            this.state.useMove();
-            if (this.gameUI) {
-                this.gameUI.updateScore(this.state.score, GameConfig.TARGET_SCORE);
-                this.gameUI.setMoves(this.state.movesLeft);
-            }
-            this.boardView.playBurnAnimation(cells, () => this.applyGravityAndRefill());
+            this.resolveBurn(this.board.getSpecialEffectCells(row, col), {
+                consumeMove: true,
+                useExplosionFx: false,
+                playExplosionSound: false,
+            });
+            return true;
+        }
+        return false;
+    }
+
+    private handleNormalGroupClick(row: number, col: number, touchWorld?: cc.Vec2): void {
+        this.inputBlocked = true;
+        const resolved = this.resolveGroupForTouch(row, col, touchWorld);
+        if (resolved.group.length < GameConfig.MIN_GROUP_SIZE) {
+            if (this.boardView && resolved.group.length === 1) this.boardView.pulseTile(resolved.burnRow, resolved.burnCol);
+            this.inputBlocked = false;
             return;
         }
+        const count = this.board.burnCells(resolved.group);
+        const spawnType = this.getSpawnTypeForGroup(resolved.group.length);
+        if (spawnType !== null) this.board.setAt(resolved.burnRow, resolved.burnCol, spawnType);
+        this.state.addScore(count * GameConfig.scorePerTile);
+        this.state.useMove();
+        this.syncUiCounters();
+        this.playSound(this.soundMatchClip);
+        this.boardView.playBurnAnimation(resolved.group, () => this.applyGravityAndRefill());
+    }
 
+    private resolveGroupForTouch(row: number, col: number, touchWorld?: cc.Vec2): { group: [number, number][], burnRow: number, burnCol: number } {
         let group = this.board.getConnectedGroup(row, col);
         let burnRow = row;
         let burnCol = col;
@@ -391,52 +346,68 @@ export default class BlastGame extends cc.Component {
             touchWorld &&
             this.boardView &&
             !this.boardView.isTouchInsideTileRect(touchWorld, row, col);
-        if (
-            group.length < GameConfig.MIN_GROUP_SIZE &&
-            fingerOutsidePrimaryTile &&
-            this.boardView
-        ) {
-            for (const [rr, cc] of this.boardView.getCellsRankedByTouchDistance(touchWorld).slice(0, 16)) {
-                if (!this.board.isNormal(this.board.getAt(rr, cc))) continue;
-                const g = this.board.getConnectedGroup(rr, cc);
-                if (g.length >= GameConfig.MIN_GROUP_SIZE) {
-                    burnRow = rr;
-                    burnCol = cc;
-                    group = g;
-                    break;
-                }
-            }
+        if (group.length >= GameConfig.MIN_GROUP_SIZE || !fingerOutsidePrimaryTile || !this.boardView) {
+            return { group, burnRow, burnCol };
         }
-        if (group.length < GameConfig.MIN_GROUP_SIZE) {
-            if (this.boardView && group.length === 1) this.boardView.pulseTile(burnRow, burnCol);
-            this.inputBlocked = false;
-            return;
+        for (const [rr, cc] of this.boardView.getCellsRankedByTouchDistance(touchWorld).slice(0, 16)) {
+            if (!this.board.isNormal(this.board.getAt(rr, cc))) continue;
+            const candidate = this.board.getConnectedGroup(rr, cc);
+            if (candidate.length < GameConfig.MIN_GROUP_SIZE) continue;
+            group = candidate;
+            burnRow = rr;
+            burnCol = cc;
+            break;
         }
-        row = burnRow;
-        col = burnCol;
-        const count = this.board.burnCells(group);
-        const n = group.length;
-        let spawnType: number | null = null;
-        if (n >= GameConfig.POWER_BOOSTER_GROUP_MIN) {
-            spawnType = GameConfig.TILE_BOMB_MAX;
+        return { group, burnRow, burnCol };
+    }
+
+    private getSpawnTypeForGroup(groupSize: number): number | null {
+        if (groupSize >= GameConfig.POWER_BOOSTER_GROUP_MIN) {
             this.state.addMoves(GameConfig.BONUS_MOVES_POWER);
-        } else if (n >= GameConfig.BOOSTER_GROUP_MIN && n <= GameConfig.BOOSTER_GROUP_MAX) {
-            if (n === 5) spawnType = GameConfig.TILE_BOMB;
-            else if (n === 6) spawnType = GameConfig.TILE_ROCKET_H;
-            else if (n === 7) spawnType = GameConfig.TILE_ROCKET_V;
-            else spawnType = GameConfig.TILE_BOMB_CLEAR_FIELD;
+            return GameConfig.TILE_BOMB_MAX;
         }
-        if (spawnType !== null) {
-            this.board.setAt(row, col, spawnType);
-        }
+        if (groupSize < GameConfig.BOOSTER_GROUP_MIN || groupSize > GameConfig.BOOSTER_GROUP_MAX) return null;
+        if (groupSize === 5) return GameConfig.TILE_BOMB;
+        if (groupSize === 6) return GameConfig.TILE_ROCKET_H;
+        if (groupSize === 7) return GameConfig.TILE_ROCKET_V;
+        return GameConfig.TILE_BOMB_CLEAR_FIELD;
+    }
+
+    private resolveBurn(
+        initialCells: [number, number][],
+        options: { consumeMove: boolean; useExplosionFx: boolean; playExplosionSound: boolean }
+    ): void {
+        this.inputBlocked = true;
+        const cells = this.board.getCellsWithChainReaction(initialCells);
+        const count = this.board.burnCells(cells);
         this.state.addScore(count * GameConfig.scorePerTile);
-        this.state.useMove();
-        if (this.gameUI) {
-            this.gameUI.updateScore(this.state.score, GameConfig.TARGET_SCORE);
-            this.gameUI.setMoves(this.state.movesLeft);
-        }
-        this.playSound(this.soundMatchClip);
-        this.boardView.playBurnAnimation(group, () => this.applyGravityAndRefill());
+        if (options.consumeMove) this.state.useMove();
+        this.syncUiCounters();
+        if (options.playExplosionSound) this.playSound(this.soundExplosionClip);
+        this.boardView.playBurnAnimation(cells, () => this.applyGravityAndRefill(), options.useExplosionFx);
+    }
+
+    private resetTeleportSelection(): void {
+        this.selectedForSwap = null;
+        this.boosterMode = 'none';
+        this.teleportSource = null;
+        this.boardView.highlightCells([], false);
+        this.boardView.refresh();
+    }
+
+    private isBlockedTeleportTarget(row: number, col: number, value: number): boolean {
+        const actionTile =
+            (value >= GameConfig.TILE_ROCKET_H && value <= GameConfig.TILE_CLEAR_ALL) ||
+            value === GameConfig.TILE_BOMB_CLEAR_FIELD;
+        if (actionTile) return true;
+        if (value < 0 || value > 4) return false;
+        return this.board.getConnectedGroup(row, col).length >= GameConfig.MIN_GROUP_SIZE;
+    }
+
+    private syncUiCounters(): void {
+        if (!this.gameUI) return;
+        this.gameUI.updateScore(this.state.score, GameConfig.TARGET_SCORE);
+        this.gameUI.setMoves(this.state.movesLeft);
     }
 
     private applyGravityAndRefill(): void {
